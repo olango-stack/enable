@@ -1,1 +1,6 @@
 Enabling EKS Auto Mode with Terraform  requires setting compute_config.enabled, kubernetes_network_config.elastic_load_balancing.enabled, and storage_config.block_storage.enabled to true, as well as bootstrap_self_managed_addons to false.
+Let's execute the following command to import the cluster IAM role to the Terraform state:
+
+terraform import aws_iam_role.cluster_role $DEMO_CLUSTER_ROLE_NAME
+
+Since the cluster has already been created for us, we'll have to modify the cluster IAM role trust policy per the EKS Auto Mode documentation . That means that before planning and applying the resources, we should import the AWS IAM role to the Terraform state.
