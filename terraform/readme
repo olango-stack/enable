@@ -1,0 +1,1 @@
+Enabling EKS Auto Mode with Terraform  requires setting compute_config.enabled, kubernetes_network_config.elastic_load_balancing.enabled, and storage_config.block_storage.enabled to true, as well as bootstrap_self_managed_addons to false.
