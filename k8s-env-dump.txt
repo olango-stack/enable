@@ -1,0 +1,15 @@
+default/retail-store-app-carts
+[{"name":"JAVA_OPTS","value":"-XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom"}]
+
+default/retail-store-app-catalog
+
+
+default/retail-store-app-checkout
+
+
+default/retail-store-app-orders
+[{"name":"JAVA_OPTS","value":"-XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom"}]
+
+default/retail-store-app-ui
+[{"name":"JAVA_OPTS","value":"-XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom"},{"name":"METADATA_KUBERNETES_POD_NAME","valueFrom":{"fieldRef":{"apiVersion":"v1","fieldPath":"metadata.name"}}},{"name":"METADATA_KUBERNETES_NAMESPACE","valueFrom":{"fieldRef":{"apiVersion":"v1","fieldPath":"metadata.namespace"}}},{"name":"METADATA_KUBERNETES_NODE_NAME","valueFrom":{"fieldRef":{"apiVersion":"v1","fieldPath":"spec.nodeName"}}}]
+

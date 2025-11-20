@@ -1,0 +1,10 @@
+charts/retail-store-sample-catalog-chart/templates/deployment.yaml:          envFrom:
+charts/retail-store-sample-catalog-chart/templates/mysql-statefulset.yaml:          env:
+charts/retail-store-sample-orders-chart/templates/deployment.yaml:          env:
+charts/retail-store-sample-orders-chart/templates/deployment.yaml:          envFrom:
+charts/retail-store-sample-orders-chart/templates/postgresql-statefulset.yaml:          env:
+charts/retail-store-sample-cart-chart/templates/deployment.yaml:          env:
+charts/retail-store-sample-cart-chart/templates/deployment.yaml:          envFrom:
+charts/retail-store-sample-checkout-chart/templates/deployment.yaml:          envFrom:
+charts/retail-store-sample-ui-chart/templates/deployment.yaml:          env:
+charts/retail-store-sample-ui-chart/templates/deployment.yaml:          envFrom:

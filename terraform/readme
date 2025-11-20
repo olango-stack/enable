@@ -61,3 +61,14 @@ These Services are internal to the cluster, so we cannot access them from the In
 
 kubectl port-forward $(kubectl get pods \
  --selector=app.kubernetes.io/name=ui -o jsonpath='{.items[0].metadata.name}') 8080:8080
+
+
+
+
+ ## Environment Variables
+
+All environment variables used in this project are listed in `.env.example`.  
+Copy it to `.env` and fill in the real values:
+
+```bash
+cp .env.example .env

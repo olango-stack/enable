@@ -1,0 +1,620 @@
+apiVersion: v1
+items:
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      meta.helm.sh/release-name: retail-store-app-carts
+      meta.helm.sh/release-namespace: default
+    creationTimestamp: "2025-11-19T20:54:58Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/component: service
+      app.kubernetes.io/instance: retail-store-app-carts
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/name: carts
+      app.kubernetes.io/owner: retail-store-sample
+      helm.sh/chart: carts-1.1.0
+    name: retail-store-app-carts
+    namespace: default
+    resourceVersion: "374878"
+    uid: 25c3b3f5-a611-45ee-ae33-14fe6dd18ccf
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/component: service
+        app.kubernetes.io/instance: retail-store-app-carts
+        app.kubernetes.io/name: carts
+        app.kubernetes.io/owner: retail-store-sample
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 1
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          prometheus.io/path: /actuator/prometheus
+          prometheus.io/port: "8080"
+          prometheus.io/scrape: "true"
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/component: service
+          app.kubernetes.io/instance: retail-store-app-carts
+          app.kubernetes.io/name: carts
+          app.kubernetes.io/owner: retail-store-sample
+      spec:
+        containers:
+        - env:
+          - name: JAVA_OPTS
+            value: -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom
+          envFrom:
+          - configMapRef:
+              name: retail-store-app-carts
+          image: public.ecr.aws/aws-containers/retail-store-sample-cart:1.1.0
+          imagePullPolicy: IfNotPresent
+          name: carts
+          ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 256m
+              memory: 512Mi
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: tmp-volume
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 1000
+        serviceAccount: retail-store-app-carts
+        serviceAccountName: retail-store-app-carts
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir:
+            medium: Memory
+          name: tmp-volume
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2025-11-19T20:54:58Z"
+      lastUpdateTime: "2025-11-19T20:54:58Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2025-11-19T20:54:58Z"
+      lastUpdateTime: "2025-11-19T20:56:18Z"
+      message: ReplicaSet "retail-store-app-carts-849f69cc8d" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      meta.helm.sh/release-name: retail-store-app-catalog
+      meta.helm.sh/release-namespace: default
+    creationTimestamp: "2025-11-19T20:54:55Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/component: service
+      app.kubernetes.io/instance: retail-store-app-catalog
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/name: catalog
+      app.kubernetes.io/owner: retail-store-sample
+      helm.sh/chart: catalog-1.1.0
+    name: retail-store-app-catalog
+    namespace: default
+    resourceVersion: "374686"
+    uid: b5be7f37-62ae-446e-b836-23ca10dc5f6c
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/component: service
+        app.kubernetes.io/instance: retail-store-app-catalog
+        app.kubernetes.io/name: catalog
+        app.kubernetes.io/owner: retail-store-sample
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 1
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          prometheus.io/path: /metrics
+          prometheus.io/port: "8080"
+          prometheus.io/scrape: "true"
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/component: service
+          app.kubernetes.io/instance: retail-store-app-catalog
+          app.kubernetes.io/name: catalog
+          app.kubernetes.io/owner: retail-store-sample
+      spec:
+        containers:
+        - envFrom:
+          - configMapRef:
+              name: retail-store-app-catalog
+          image: public.ecr.aws/aws-containers/retail-store-sample-catalog:1.1.0
+          imagePullPolicy: IfNotPresent
+          name: catalog
+          ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 256m
+              memory: 256Mi
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: tmp-volume
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 1000
+        serviceAccount: retail-store-app-catalog
+        serviceAccountName: retail-store-app-catalog
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir:
+            medium: Memory
+          name: tmp-volume
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2025-11-19T20:54:55Z"
+      lastUpdateTime: "2025-11-19T20:54:55Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2025-11-19T20:54:55Z"
+      lastUpdateTime: "2025-11-19T20:55:38Z"
+      message: ReplicaSet "retail-store-app-catalog-f5d9fcf86" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      meta.helm.sh/release-name: retail-store-app-checkout
+      meta.helm.sh/release-namespace: default
+    creationTimestamp: "2025-11-19T20:55:00Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/component: service
+      app.kubernetes.io/instance: retail-store-app-checkout
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/name: checkout
+      app.kubernetes.io/owner: retail-store-sample
+      helm.sh/chart: checkout-1.1.0
+    name: retail-store-app-checkout
+    namespace: default
+    resourceVersion: "374858"
+    uid: d06a8fc2-2df0-4a9b-b902-9621818d3600
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/component: service
+        app.kubernetes.io/instance: retail-store-app-checkout
+        app.kubernetes.io/name: checkout
+        app.kubernetes.io/owner: retail-store-sample
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 1
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          prometheus.io/path: /metrics
+          prometheus.io/port: "8080"
+          prometheus.io/scrape: "true"
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/component: service
+          app.kubernetes.io/instance: retail-store-app-checkout
+          app.kubernetes.io/name: checkout
+          app.kubernetes.io/owner: retail-store-sample
+      spec:
+        containers:
+        - envFrom:
+          - configMapRef:
+              name: retail-store-app-checkout
+          image: public.ecr.aws/aws-containers/retail-store-sample-checkout:1.1.0
+          imagePullPolicy: IfNotPresent
+          name: checkout
+          ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health
+              port: 8080
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 128m
+              memory: 256Mi
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: tmp-volume
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 1000
+        serviceAccount: retail-store-app-checkout
+        serviceAccountName: retail-store-app-checkout
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir:
+            medium: Memory
+          name: tmp-volume
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2025-11-19T20:55:00Z"
+      lastUpdateTime: "2025-11-19T20:55:00Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2025-11-19T20:55:00Z"
+      lastUpdateTime: "2025-11-19T20:56:11Z"
+      message: ReplicaSet "retail-store-app-checkout-6df8f44b97" has successfully
+        progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      meta.helm.sh/release-name: retail-store-app-orders
+      meta.helm.sh/release-namespace: default
+    creationTimestamp: "2025-11-19T20:54:56Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/component: service
+      app.kubernetes.io/instance: retail-store-app-orders
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/name: orders
+      app.kubernetes.io/owner: retail-store-sample
+      helm.sh/chart: orders-1.1.0
+    name: retail-store-app-orders
+    namespace: default
+    resourceVersion: "374947"
+    uid: 9821aedb-de16-45fd-b811-cfa8562b8031
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/component: service
+        app.kubernetes.io/instance: retail-store-app-orders
+        app.kubernetes.io/name: orders
+        app.kubernetes.io/owner: retail-store-sample
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 1
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          prometheus.io/path: /actuator/prometheus
+          prometheus.io/port: "8080"
+          prometheus.io/scrape: "true"
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/component: service
+          app.kubernetes.io/instance: retail-store-app-orders
+          app.kubernetes.io/name: orders
+          app.kubernetes.io/owner: retail-store-sample
+      spec:
+        containers:
+        - env:
+          - name: JAVA_OPTS
+            value: -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom
+          envFrom:
+          - configMapRef:
+              name: retail-store-app-orders
+          image: public.ecr.aws/aws-containers/retail-store-sample-orders:1.1.0
+          imagePullPolicy: IfNotPresent
+          name: orders
+          ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 256m
+              memory: 512Mi
+          securityContext:
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: tmp-volume
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 1000
+        serviceAccount: retail-store-app-orders
+        serviceAccountName: retail-store-app-orders
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir:
+            medium: Memory
+          name: tmp-volume
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2025-11-19T20:54:56Z"
+      lastUpdateTime: "2025-11-19T20:54:56Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2025-11-19T20:54:56Z"
+      lastUpdateTime: "2025-11-19T20:56:18Z"
+      message: ReplicaSet "retail-store-app-orders-5fd7c6cf7" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      meta.helm.sh/release-name: retail-store-app-ui
+      meta.helm.sh/release-namespace: default
+    creationTimestamp: "2025-11-19T20:55:02Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/component: service
+      app.kubernetes.io/instance: retail-store-app-ui
+      app.kubernetes.io/managed-by: Helm
+      app.kubernetes.io/name: ui
+      app.kubernetes.io/owner: retail-store-sample
+      helm.sh/chart: ui-1.1.0
+    name: retail-store-app-ui
+    namespace: default
+    resourceVersion: "374961"
+    uid: 23041c04-b387-4f99-8841-26bb4ac3b77c
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app.kubernetes.io/component: service
+        app.kubernetes.io/instance: retail-store-app-ui
+        app.kubernetes.io/name: ui
+        app.kubernetes.io/owner: retail-store-sample
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 1
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          prometheus.io/path: /actuator/prometheus
+          prometheus.io/port: "8080"
+          prometheus.io/scrape: "true"
+        creationTimestamp: null
+        labels:
+          app.kubernetes.io/component: service
+          app.kubernetes.io/instance: retail-store-app-ui
+          app.kubernetes.io/name: ui
+          app.kubernetes.io/owner: retail-store-sample
+      spec:
+        containers:
+        - env:
+          - name: JAVA_OPTS
+            value: -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/urandom
+          - name: METADATA_KUBERNETES_POD_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: METADATA_KUBERNETES_NAMESPACE
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: metadata.namespace
+          - name: METADATA_KUBERNETES_NODE_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: spec.nodeName
+          envFrom:
+          - configMapRef:
+              name: retail-store-app-ui
+          image: public.ecr.aws/aws-containers/retail-store-sample-ui:1.1.0
+          imagePullPolicy: IfNotPresent
+          name: ui
+          ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: 512Mi
+            requests:
+              cpu: 128m
+              memory: 512Mi
+          securityContext:
+            capabilities:
+              add:
+              - NET_BIND_SERVICE
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /tmp
+            name: tmp-volume
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 1000
+        serviceAccount: retail-store-app-ui
+        serviceAccountName: retail-store-app-ui
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir:
+            medium: Memory
+          name: tmp-volume
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2025-11-19T20:55:02Z"
+      lastUpdateTime: "2025-11-19T20:55:02Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2025-11-19T20:55:02Z"
+      lastUpdateTime: "2025-11-19T20:56:21Z"
+      message: ReplicaSet "retail-store-app-ui-fdc6589dc" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+kind: List
+metadata:
+  resourceVersion: ""
