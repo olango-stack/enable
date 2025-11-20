@@ -851,3 +851,1632 @@ In this lab, we explored using AWS Graviton instances in EKS Auto Mode for impro
 We created a dedicated Graviton NodePool configured for arm64 architecture instances with a GravitonOnly taint to control Pod scheduling. We then modified our application by updating the UI component's configuration with the necessary node selector and toleration to enable running on Graviton instances.
 
 In the next lab we will explore combining On-Demand instances with Spot Instances for additional cost optimization.
+
+
+
+
+On-Demand & Spot
+Overview | Create NodePools | Deploy the application | Summary
+
+In this section, we will explore the basics of EKS Auto Mode and dive deep into customization options.
+
+Overview
+Currently, all our compute nodes are running on On-Demand capacity. However, AWS EC2 offers multiple purchase options  for running EKS workloads.
+
+Amazon EC2 Spot Instances  enable you to leverage unused EC2 capacity in the AWS cloud at discounts of up to 90% compared to On-Demand prices. Spot Instances are ideal for stateless, fault-tolerant, or flexible applications including big data workloads, containerized applications, CI/CD pipelines, web servers, high-performance computing (HPC), and test & development environments. These instances are particularly cost-effective when you have flexibility in application timing and can handle potential interruptions.
+
+In this section, we will see how we can run workloads using both On-Demand and EC2 Spot Instances with a desired ratio to guarantee the base availability of On-Demand nodes, while leveraging Spot Instances for optimizing costs.
+
+Create NodePools
+We will create two NodePools that utilize Karpenter's capability to distribute workloads between on-demand and spot instances according to a defined ratio.
+
+➤ Let's create the NodePools:
+
+cat << EOF >~/environment/nodepool-ondemandspotsplit.yaml
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: ondemand
+  labels:
+    app.kubernetes.io/managed-by: app-team
+spec:
+  disruption:
+    consolidateAfter: 30s
+    consolidationPolicy: WhenEmptyOrUnderutilized
+  template:
+    metadata:
+      labels:
+        EKSAutoNodePool: OnDemandSpotSplit
+    spec:
+      expireAfter: 336h
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: default
+      requirements:
+      - key: eks.amazonaws.com/instance-category
+        operator: In
+        values:
+        - c
+        - m
+        - r
+      - key: eks.amazonaws.com/instance-generation
+        operator: Gt
+        values:
+        - "4"
+      - key: kubernetes.io/arch
+        operator: In
+        values:
+        - amd64
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values:
+        - on-demand
+      - key: capacity-spread
+        operator: In
+        values:
+        - "1"
+      taints:
+      - effect: NoSchedule
+        key: OnDemandSpotSplit
+      terminationGracePeriod: 24h0m0s
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot
+  labels:
+    app.kubernetes.io/managed-by: app-team
+spec:
+  disruption:
+    consolidateAfter: 30s
+    consolidationPolicy: WhenEmptyOrUnderutilized
+  template:
+    metadata:
+      labels:
+        EKSAutoNodePool: OnDemandSpotSplit
+    spec:
+      expireAfter: 336h
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: default
+      requirements:
+      - key: eks.amazonaws.com/instance-category
+        operator: In
+        values:
+        - c
+        - m
+        - r
+      - key: eks.amazonaws.com/instance-generation
+        operator: Gt
+        values:
+        - "4"
+      - key: kubernetes.io/arch
+        operator: In
+        values:
+        - amd64
+      - key: karpenter.sh/capacity-type
+        operator: In
+        values:
+        - spot
+      - key: capacity-spread
+        operator: In
+        values:
+        - "2"
+        - "3"
+        - "4"
+        - "5"
+      taints:
+      - effect: NoSchedule
+        key: OnDemandSpotSplit
+      terminationGracePeriod: 24h0m0s
+EOF
+
+kubectl apply -f ~/environment/nodepool-ondemandspotsplit.yaml
+
+The output should be similar:
+
+nodepool.karpenter.sh/ondemand created
+nodepool.karpenter.sh/spot created
+We leverage Karpenter's node labeling and topology spread capabilities to implement a straightforward method for distributing workloads between on-demand and spot instances at a desired ratio.
+
+To achieve this, we've created separate NodePools for Spot and On-Demand capacity types, each using distinct values for a custom label called capacity-spread. In our configuration, the spot NodePool has four unique values while the On-Demand NodePool has one value. When workloads are spread evenly across this label, we achieve a 4:1 ratio of spot to On-Demand nodes.
+
+Deploy the application
+Now, we'll configure the catalog component to distribute its replicas across Spot Instances. We'll set up 5 replicas of our catalog application and use the capacity-spread label to achieve our desired 4:1 ratio of spot to On-Demand nodes.
+
+Configure and re-deploy the catalog component
+➤ Let's configure and re-deploy the component:
+
+cat << EOF >~/environment/values-catalog.yaml
+replicaCount: 5
+  
+topologySpreadConstraints:
+  - maxSkew: 1
+    minDomains: 5
+    topologyKey: capacity-spread
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: catalog
+
+nodeSelector:
+  EKSAutoNodePool: OnDemandSpotSplit
+tolerations:
+- key: "OnDemandSpotSplit"
+  operator: "Exists"
+EOF
+
+helm upgrade -f ~/environment/values-catalog.yaml retail-store-app-catalog oci://public.ecr.aws/aws-containers/retail-store-sample-catalog-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} --hide-notes
+
+The output should be similar to:
+
+Pulled: public.ecr.aws/aws-containers/retail-store-sample-catalog-chart:1.1.0
+Digest: sha256:0dc16ac63a8f32f309ea7d69f58973520c156305f69f2703fcb5564da6b67eb6
+Release "retail-store-app-catalog" has been upgraded. Happy Helming!
+NAME: retail-store-app-catalog
+LAST DEPLOYED: Sun Jan 19 23:42:07 2025
+NAMESPACE: default
+STATUS: deployed
+REVISION: 2
+Let's verify that the catalog component pods are running on Spot instances.
+
+➤ Execute these commands to check the nodes and pods:
+
+kubectl get node -L karpenter.sh/capacity-type --no-headers | while read node status roles age version capacity_type; do
+echo "Pods on node $node (Capacity Type: $capacity_type):"
+  kubectl get pods --all-namespaces --field-selector spec.nodeName=$node -l app.kubernetes.io/instance=retail-store-app-catalog
+echo "-----------------------------------"
+done
+
+Note that it may take a minute for the instances to be created and operational and that nodes that will be removed after consolidation will appear empty.
+
+Pods on node i-02e25edfdcf052a8d (Capacity Type: on-demand):
+No resources found
+-----------------------------------
+Pods on node i-059c896e2ddc3787f (Capacity Type: spot):
+NAMESPACE   NAME                                        READY   STATUS    RESTARTS   AGE
+default     retail-store-app-catalog-7568d4cffb-svztn   1/1     Running   0          2m13s
+-----------------------------------
+Pods on node i-074da6ae5127bf5dd (Capacity Type: on-demand):
+No resources found
+-----------------------------------
+Pods on node i-0865727e5109e8eda (Capacity Type: on-demand):
+NAMESPACE   NAME                                        READY   STATUS    RESTARTS   AGE
+default     retail-store-app-catalog-7568d4cffb-ft88b   1/1     Running   0          2m16s
+-----------------------------------
+Pods on node i-095f16c14ff78d4e0 (Capacity Type: spot):
+NAMESPACE   NAME                                        READY   STATUS    RESTARTS   AGE
+default     retail-store-app-catalog-7568d4cffb-gkvqj   1/1     Running   0          2m59s
+-----------------------------------
+Pods on node i-0995ee2810f2eda4b (Capacity Type: on-demand):
+No resources found
+-----------------------------------
+Pods on node i-0b36d75cd120def01 (Capacity Type: spot):
+NAMESPACE   NAME                                        READY   STATUS    RESTARTS   AGE
+default     retail-store-app-catalog-7568d4cffb-s6t4f   1/1     Running   0          3m2s
+-----------------------------------
+Pods on node i-0d7d6046307eecb7e (Capacity Type: spot):
+NAMESPACE   NAME                                        READY   STATUS    RESTARTS   AGE
+default     retail-store-app-catalog-7568d4cffb-4n4xs   1/1     Running   0          3m3s
+We can confirm that the catalog app pods are successfully distributed across both Spot and On-demand capacity types.
+
+Summary
+In this lab, we've explored how to effectively combine On-Demand and Spot instances in EKS Auto Mode. We implemented a split-ratio strategy using two NodePools and the capacity-spread label, configuring the Spot NodePool with four unique spread values and the On-Demand NodePool with one value to achieve a 4:1 ratio.
+
+To demonstrate this configuration, we deployed our catalog application with 5 replicas and used topology spread constraints to distribute the pods according to our defined ratio. This approach demonstrates how to balance reliability with cost optimization in EKS cluster management by maintaining a baseline of stable On-Demand capacity while leveraging cost-effective Spot instances for workloads that can handle interruptions.
+
+This lab illustrated how to achieve an optimal balance between reliability and cost efficiency in your EKS cluster management strategy.
+
+
+Networking
+EKS Auto Mode supports several network capabilities that are important for security, cluster operations, and application connectivity inside and outside of the cluster.
+
+This section will cover how to expose applications using Network Load Balancer and Application Load Balancer.
+
+Exposing Applications
+Overview | Expose the application | Summary
+
+Overview
+In this hands-on lab, we'll learn how to expose applications in Amazon EKS Auto Mode using AWS's managed load balancing solutions.
+
+We will work through a practical scenario to:
+
+Configure an Application Load Balancer (ALB) using Kubernetes Ingress resources
+Set up a Network Load Balancer (NLB) using Kubernetes Service resources
+Implement path-based routing to share a single ALB across multiple services
+Observe load balancing in action with custom response headers showing which pods handle requests
+Expose the application
+EKS Auto Mode simplifies the process by automatically managing the lifecycle of the ALBs and NLBs that are required for our application. As EKS Auto Mode is Kubernetes conformant, it allows us to use the same Kubernetes constructs of Service  and Ingress  to provision those Load Balancers.
+
+In the remainder of this module, we'll learn how to provision those load balancers with Auto Mode.
+
+Step 1: Set Up IngressClass for ALB
+Since Ingresses can be implemented by different controllers, each Ingress should specify a class, a reference to an IngressClass resource that contains additional configuration including the name of the controller that should implement the class.
+
+IngressClass resources contain an optional parameters field. This can be used to reference additional implementation-specific configuration for this class.
+
+To target the EKS Auto Mode ALB load balancing capability controller, we will create an IngressClassParams, which allows us to define an AWS specific configuration for our ALB such as certificates to use, the subnets to use for the ALB ENIs, or the ingress group  configuration to group together multiple ingress objects into a single ALB.
+
+The supported configurations for the IngressClassParams objects are listed  in EKS Auto Mode documentation. Additionally, we will create IngressClass that will use the IngressClassParams and point to the EKS Auto Mode capability. This is a one-time setup required for using ALBs in our cluster. Notice the spec.controller definition in the IngressClass below.
+
+➤ Create the IngressClass and IngressClassParams to further configure the EKS Auto Mode load balancing capability:
+
+cat << EOF >~/environment/ingress.yaml
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+  name: eks-auto-alb
+spec:
+  scheme: internet-facing
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: eks-auto-alb
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: eks.amazonaws.com/alb
+  parameters:
+    apiGroup: eks.amazonaws.com
+    kind: IngressClassParams
+    name: eks-auto-alb
+EOF
+
+kubectl apply -f ~/environment/ingress.yaml
+
+This should produce the following output:
+
+ingressclassparams.eks.amazonaws.com/eks-auto-alb created
+ingressclass.networking.k8s.io/eks-auto-alb created
+➤ Verify that the resources have been created:
+
+kubectl get ingressclass,ingressclassparams
+
+The output should look like the one below:
+
+NAME                                          CONTROLLER              PARAMETERS                                          AGE
+ingressclass.networking.k8s.io/eks-auto-alb   eks.amazonaws.com/alb   IngressClassParams.eks.amazonaws.com/eks-auto-alb   56s
+
+NAME                                                GROUP-NAME   SCHEME            IP-ADDRESS-TYPE   AGE
+ingressclassparams.eks.amazonaws.com/eks-auto-alb                internet-facing                     56s
+Note the controller used, as well as the SCHEME defined (internet-facing in our case) which is based on our configuration above.
+
+Step 2: Deploy the Retail Store Application
+We will now update the UI component to provision an ALB by creating an Ingress object, as we can see with the ingress configuration in the component's Helm chart values.
+
+➤ Re-deploy the UI component with custom values:
+
+cat << EOF >~/environment/values-ui.yaml
+app:
+  theme: default
+  endpoints: 
+    catalog: http://retail-store-app-catalog:80
+    carts: http://retail-store-app-carts:80
+    checkout: http://retail-store-app-checkout:80
+    orders: http://retail-store-app-orders:80
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+topologySpreadConstraints:
+   - maxSkew: 1
+     minDomains: 3
+     topologyKey: topology.kubernetes.io/zone
+     whenUnsatisfiable: DoNotSchedule
+     labelSelector:
+       matchLabels:
+         app.kubernetes.io/name: ui
+
+ingress:
+  enabled: true
+  className: eks-auto-alb
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/liveness
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/success-codes: '200-399'
+EOF
+
+helm upgrade -f ~/environment/values-ui.yaml retail-store-app-ui oci://public.ecr.aws/aws-containers/retail-store-sample-ui-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} --hide-notes
+
+This should produce an output similar to the following:
+
+Pulled: public.ecr.aws/aws-containers/retail-store-sample-ui-chart:1.1.0
+Digest: sha256:5cd721c10214c306b06c7223367f626f21a8d471eee8f0a576742426f84141f2
+Release "retail-store-app-ui" has been upgraded. Happy Helming!
+NAME: retail-store-app-ui
+LAST DEPLOYED: Sun Feb 16 21:30:01 2025
+NAMESPACE: default
+STATUS: deployed
+REVISION: 5
+➤ Wait for all deployments to be ready by using the following command:
+
+kubectl wait --for=condition=available deployments retail-store-app-ui --all
+
+Example output:
+
+deployment.apps/retail-store-app-ui condition met
+Step 3: Access the UI application with the provisioned ALB
+The Ingress object that we've deployed in the previous step gets translated by EKS Auto Mode into an ALB with the appropriate configurations we've defined in the Ingress object itself, and in the IngressClassParams above.
+
+➤ Retrieve the ALB's DNS endpoint by executing the following command:
+
+export ALB_URL=$(kubectl get ingress retail-store-app-ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# wait for the alb to become active
+aws elbv2 wait load-balancer-available --load-balancer-arns $(aws elbv2 describe-load-balancers --query 'LoadBalancers[?DNSName==`'"$ALB_URL"'`].LoadBalancerArn' --output text)
+
+echo "Your application is available at: http://${ALB_URL}"
+
+ALB provisioning takes couple of minutes
+Note that ALB provision and targets registration may take several minutes.
+
+At this point, we can use the URL to access the application in a new browser window.
+
+Step 4: Expose Catalog Service Using NLB
+In the previous steps, we've used EKS Auto Mode to provision an ALB. We'll now experience how to use EKS Auto Mode to provision NLB using the Kubernetes Service object.
+
+➤ Execute the following command.
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+kubectl apply -f - << EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-nlb
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: catalog
+EOF
+
+➤ Wait for the NLB to be provisioned and get its URL:
+
+export NLB_URL=$(kubectl get service catalog-nlb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# wait for the NLB to become active
+aws elbv2 wait load-balancer-available --load-balancer-arns $(aws elbv2 describe-load-balancers --query 'LoadBalancers[?
+DNSName==`'"$NLB_URL"'`].LoadBalancerArn' --output text)
+echo "The catalog service is also available at: http://${NLB_URL}"
+
+Step 5.1: Test Application Load Balancer Access
+Let's test access to our application and observe load balancing in action. The catalog service has been configured with 5 replicas in the compute module under "On-Demand & Spot Split Ratio". We will use this to demonstrate load distribution.
+
+➤ First, verify that all catalog pods are running:
+
+kubectl get pods -l app.kubernetes.io/name=catalog,app.kubernetes.io/component=service
+
+You should see that all of the catalog's component pods are in Running state. Now, let's use two terminal windows to observe the load balancing behavior.
+
+➤ In your first terminal, watch the logs from all catalog pods:
+
+kubectl logs -f -l app.kubernetes.io/name=catalog,app.kubernetes.io/component=service --prefix=true
+
+➤ In your second terminal, generate some traffic through the ALB:
+
+# Get the ALB URL
+export ALB_URL=$(kubectl get ingress retail-store-app-ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "The application is available at: http://${ALB_URL}"
+
+# Generate traffic to see load balancing across pods
+CURL_CMD=$(which curl)
+for i in {1..15}; do
+  echo "Sending request $i..."
+  $CURL_CMD -s "http://${ALB_URL}/catalog?request=$i" > /dev/null
+  sleep 2
+done
+
+You should see detailed logs in your first terminal showing requests being distributed across all three catalog pods. Each log line shows:
+
+Which Pod handled the request (in the prefix)
+HTTP method and path
+Response status code
+Request processing time
+Client IP address
+Example log output showing distribution across pods:
+
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] 2025/06/05 09:03:52 /appsrc/repository/repository.go:204
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [0.185ms] [rows:4] SELECT _ FROM `tags` ORDER BY display_name asc
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [GIN] 2025/06/05 - 09:03:52 | 200 | 290.527µs | 192.168.75.100 | GET "/catalog/tags"
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog]
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] 2025/06/05 09:03:52 /appsrc/repository/repository.go:190
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [0.061ms] [rows:1] SELECT count(_) FROM `products`
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [GIN] 2025/06/05 - 09:03:52 | 200 | 237.024µs | 192.168.75.100 | GET "/catalog/size?tags="
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog]
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] 2025/06/05 09:03:52 /appsrc/repository/repository.go:154
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [0.103ms] [rows:6] SELECT _ FROM `product_tags` WHERE `product_tags`.`product_id` IN ("a1258cd2-176c-4507-ade6-746dab5ad625","d4edfedb-dbe9-4dd9-aae8-009489394955","79bce3f3-935f-4912-8c62-0d2f3e059405","8757729a-c518-4356-8694-9e795a9b3237","4f18544b-70a5-4352-8e19-0d070f46745d","d77f9ae6-e9a8-4a3e-86bd-b72af75cbc49")
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog]
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] 2025/06/05 09:03:52 /appsrc/repository/repository.go:154
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [0.091ms] [rows:4] SELECT _ FROM `tags` WHERE `tags`.`name` IN ("clothing","food","vehicles","accessories")
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog]
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] 2025/06/05 09:03:52 /appsrc/repository/repository.go:154
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [1.793ms] [rows:6] SELECT \* FROM `products` ORDER BY products.name asc LIMIT 6
+[pod/retail-store-app-catalog-dcb5d8d4c-6gn82/catalog] [GIN] 2025/06/05 - 09:03:52 | 200 | 1.873799ms | 192.168.75.100 | GET "/catalog/products?order=&page=1&size=6&tags="
+Notice the highlighted lines showing different Pod suffixes (bzq65, 77c2t, tkdqm) handling the requests, demonstrating the load balancing distribution.
+
+The catalog service uses the Gin web framework which provides detailed request logging. We can observe:
+
+Requests being distributed across different Pods (see the Pod names in the log prefix)
+Multiple requests being made for each page load (tags, size, and catalog data)
+Response times for each request
+Client IPs making the requests
+Step 5.2: Test Network Load Balancer Access
+To test the access to the catalog service directly through the NLB provisioned earlier, ensure that the kubectl logs command is still running on the other terminal:
+
+kubectl logs -f -l app.kubernetes.io/name=catalog,app.kubernetes.io/component=service --prefix=true
+
+Now we can test from the first terminal the access to the catalog service through the NLB by using the NLB DNS name with the appended URI below
+
+curl http://${NLB_URL}/catalog/products | jq
+
+You should expect to see a JSON response from the catalog service, as well as logs from that request on the other terminal.
+
+Step 6: Share ALB Across Multiple Services - Multiple Ingress Pattern
+In some use-cases we need to ensure that multiple ingress objects don't create multiple ALBs but rather use the same ALB with multiple routing rules. This is where EKS Auto Mode supports ingress grouping using the IngressClassParams object (see reference in the documentation ). In this step, we will create a new IngressClass object with new IngressClassParams that supports such grouping. For demonstration purposes, we will then create 2 ingress objects: one for the ui component and one for the catalog service. With this configuration, since we've configured the grouping on the IngressClassParams, a single ALB will be created pointing to both of those services. Follow the steps below to achieve that:
+
+➤ 1. Create a new IngressClassParams and IngressClass with group.name configuration:
+
+cat << EOF >~/environment/ingress-class-group.yaml
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+  name: eks-auto-alb-group-retail
+spec:
+  scheme: internet-facing
+  group:
+    name: retail
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: eks-auto-alb-group-retail
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: eks.amazonaws.com/alb
+  parameters:
+    apiGroup: eks.amazonaws.com
+    kind: IngressClassParams
+    name: eks-auto-alb-group-retail
+EOF
+
+kubectl apply -f ~/environment/ingress-class-group.yaml
+
+➤ 2. Create an ingress object for the ui component (note the use of the newly created IngressClass eks-auto-alb-group-retail ):
+
+kubectl apply -f - << EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: retail-store-shared-group-ui
+  annotations:
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/liveness
+spec:
+  ingressClassName: eks-auto-alb-group-retail
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: retail-store-app-ui
+                port:
+                  number: 80
+EOF
+
+➤ 3. Create a second ingress object for the catalog component:
+
+kubectl apply -f - << EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: retail-store-shared-group-catalog
+  annotations:
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+spec:
+  ingressClassName: eks-auto-alb-group-retail
+  rules:
+  - http:
+      paths:
+      - path: /catalog
+        pathType: Prefix
+        backend:
+          service:
+            name: retail-store-app-catalog
+            port:
+              number: 80
+EOF
+
+➤ 4. Verify the ingresses had been created:
+
+kubectl get ingress
+
+Note that the output ADDRESS of both ingresses of the catalog and the ui has the same DNS. This is because of the IngressClassParams group configuration we've used above.
+
+NAME                                 CLASS                       HOSTS   ADDRESS                                                                 PORTS   AGE
+retail-store-app-ui                  eks-auto-alb                *       k8s-default-retailst-70051948b0-467757540.us-west-2.elb.amazonaws.com   80      16m
+retail-store-backend-group-catalog   eks-auto-alb-group-retail   *       k8s-retail-5620a3cc93-1836759971.us-west-2.elb.amazonaws.com            80      30s
+retail-store-backend-group-ui        eks-auto-alb-group-retail   *       k8s-retail-5620a3cc93-1836759971.us-west-2.elb.amazonaws.com            80      11m
+➤ 5. Extract the ALB DNS (note that because both ingresses have the same DNS, we can randomly choose one of them):
+
+# Get the shared ALB URL
+export SHARED_ALB_URL=$(kubectl get ingress retail-store-shared-group-ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# wait for the shared ALB to become active
+aws elbv2 wait load-balancer-available --load-balancer-arns $(aws elbv2 describe-load-balancers --query 'LoadBalancers[?DNSName==`'"$SHARED_ALB_URL"'`].LoadBalancerArn' --output text)
+echo "The shared ALB is available at: http://$SHARED_ALB_URL"
+
+The ALB load balancer creation process can take a couple of minutes, including its DNS propagation, before you will be able to test it.
+
+➤ 6. Use the extracted DNS to access both services through a single ALB. You should expect an HTML output from the / path (coming from the ui component), and a list of items when hitting the /catalog/products path, coming from the catalog component:
+
+# Get the Shared ALB URL
+export SHARED_ALB_URL=$(kubectl get ingress retail-store-shared-group-ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "The shared ALB is available at: http://$SHARED_ALB_URL"
+
+# Test each shared service endpoint
+echo "Testing / endpoint accessing the ui component..."
+curl -s "http://$SHARED_ALB_URL/" 
+
+echo "Testing /catalog endpoint accessing the catalog component..."
+curl -s "http://$SHARED_ALB_URL/catalog/products" | jq
+
+Summary
+In this lab, we've learned how to:
+
+Deploy a real-world microservices application on EKS Auto Mode
+Set up ALB ingress for both frontend and backend services
+Use path-based routing to organize our microservices
+Observe load balancing across multiple pods
+Remember that EKS Auto Mode manages the underlying load balancer infrastructure, but we still need to define the desired state through Kubernetes resources.
+
+For production environments:
+
+Use HTTPS/TLS termination for security
+Implement proper health checks for your services
+Consider using AWS WAF for additional security
+Monitor your ALB metrics in CloudWatch
+Configure appropriate timeouts and connection settings for your Spring Boot services
+Set up proper logging and monitoring for your microservices
+Consider implementing circuit breakers and fallbacks
+
+
+
+
+Advanced Networking
+Overview | Handle IP exhaustion | Isolate Pod Network | Summary
+
+Overview
+Amazon EKS Auto Mode simplifies and automates critical networking tasks for pod and service connectivity by managing the VPC Container Network Interface (CNI) configuration and load balancer provisioning for the cluster.
+
+In modern environments there are several additional use cases that require advanced network configuration.
+
+IP exhaustion
+By default, Amazon VPC CNI will assign pods an IP address selected from the primary subnet. The primary subnet is the subnet CIDR that the primary ENI is attached to, usually the subnet of the node/host.
+
+If the subnet CIDR is too small, the CNI may not be able to acquire enough secondary IP addresses to assign to the pods, which is a common challenge for EKS IPv4 clusters.
+
+Additionally, some workloads require to increase pod density  in order to improve resources utilization. In Amazon EKS this is implemented by enabling VPC CNI prefix mode . To implement the prefix mode, instead of a single IP address, VPC CNI configures EC2 to assign /28 IP prefixes (16 IP addresses) to the ENI IP slots. When EC2 allocates a /28 IPv4 prefix to an ENI, it has to be a contiguous block of IP addresses from your subnet. If the subnet is fragmented due to an increased usage of the subnet by AWS services and worker nodes themselves, the prefix attachment may fail, essentially reducing the IP address space utilization.
+
+Infrastructure and application traffic separation
+Creating distinct network paths for different types of communication within a Kubernetes cluster is particularly valuable for organizations that need to maintain clear boundaries between their infrastructure management communications and their application workloads. Node-to-node communication typically includes cluster management traffic, infrastructure monitoring, while pod-to-pod communication handles application-specific data flows and service interactions.
+
+Different network configuration for node and pod subnets
+Applying a different network configuration to nodes and pods is also a common requirement for more complex systems. This includes customizing network address translation (SNAT) policies, placement on worker nodes and pods in public or private subnets, and defining different tagging to satisfy tools requirements.
+
+Security considerations
+The last two use cases are especially relevant use cases where traffic and access control are crucial to the security of the system.
+
+Addressing the use cases
+EKS Auto Mode provides advanced networking capabilities  that allow us to implement granular network controls and traffic separation as well as multiple layers of network security utilizing the standard VPC features  and Kubernetes-native network policies .
+
+In this lab, we will show how to simplify solutions that address IP exhaustion and pod network isolation using EKS Auto Mode advanced networking capabilities. We will do so by:
+
+Adding a secondary CIDR block to the cluster VPC
+Creating new subnets from the new CIDR block
+Targeting the new subnets via EKS AutoMode NodePool and NodeClass configuration
+Configuring the application components to utilize the above configuration
+Handle IP exhaustion
+Review the EKS Auto Mode configuration
+➤ Review the current nodes and pods IPs:
+
+kubectl get nodes -o custom-columns=NAME:.metadata.name,INTERNAL-IP:.status.addresses[0].address
+kubectl get pods -o wide
+
+As expected, all pods and nodes belong to the same VPC CIDR - 192.168.0.0/16 we defined for our cluster during its creation:
+
+NAME                  INTERNAL-IP
+i-00e062e9543d100fc   192.168.9.85
+i-016290d3063f80b19   192.168.123.101
+i-0486577e8c56711ba   192.168.125.116
+i-04ad8119e5de4ad75   192.168.17.136
+i-078b82d5fe991368d   192.168.80.147
+i-0b23214bab198a3f1   192.168.41.134
+i-0e8c82c5d21eafcec   192.168.44.214
+NAME                                         READY   STATUS    RESTARTS   AGE    IP               NODE
+retail-store-app-carts-849f69cc8d-jndp8      1/1     Running   0          165m   192.168.50.130   i-0b23214bab198a3f1
+retail-store-app-catalog-994d4889c-5fhrs     1/1     Running   0          58m    192.168.122.16   i-016290d3063f80b19
+retail-store-app-catalog-994d4889c-j949t     1/1     Running   0          58m    192.168.28.240   i-00e062e9543d100fc
+retail-store-app-catalog-994d4889c-k2csz     1/1     Running   0          57m    192.168.100.80   i-0486577e8c56711ba
+retail-store-app-catalog-994d4889c-kq65z     1/1     Running   0          57m    192.168.15.128   i-04ad8119e5de4ad75
+retail-store-app-catalog-994d4889c-t2mqk     1/1     Running   0          58m    192.168.49.48    i-0e8c82c5d21eafcec
+retail-store-app-checkout-6df8f44b97-sx7xx   1/1     Running   0          61m    192.168.50.128   i-0b23214bab198a3f1
+retail-store-app-orders-5fd7c6cf7-2xzq6      1/1     Running   0          61m    192.168.50.129   i-0b23214bab198a3f1
+retail-store-app-ui-7fbf6d97b9-npm8x         1/1     Running   0          55m    192.168.50.132   i-0b23214bab198a3f1
+Add a secondary CIDR to the cluster VPC
+➤ Execute the following command to store the VPC ID in the terminal:
+
+export VPC_ID=$(aws eks describe-cluster --name $DEMO_CLUSTER_NAME --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+
+➤ In the same terminal, execute the following command to explore all the CIDRs attached to the cluster VPC:
+
+aws ec2 describe-vpcs \
+  --vpc-ids $VPC_ID \
+  --query 'Vpcs[0].CidrBlockAssociationSet[].CidrBlock'
+
+Once again, as expected, there is only one, original, CIDR.
+
+A reminder: EKS Auto Mode enables  VPC CNI prefix delegation by default.
+
+For the sake of the workshop, let's assume that we've exhausted enough IPs from the original CIDR block, so that it's impossible to provision new /28 blocks, which we require to reduce latency of pod provision or to increase pod density on our worker nodes.
+
+The most straightforward way of dealing with the IP exhaustion issue is to attach a secondary CIDR to our VPC, create and tag subnets from that secondary CIDR and configure EKS to provision nodes and pods from these subnets.
+
+Let's attach a secondary CIDR to the cluster VPC. Our options are outlined in this document . Since we've already used the entire 192.168.0.0/16 block, we need to select a different one.
+
+➤ In the same terminal as the commands above (as we require the VPC_ID) execute the following command:
+
+aws ec2 associate-vpc-cidr-block \
+  --vpc-id ${VPC_ID} \
+  --cidr-block 10.0.0.0/16
+
+The above command is expected to fail with the following error:
+
+An error occurred (InvalidVpc.Range) when calling the AssociateVpcCidrBlock operation: The CIDR '10.0.0.0/16' is restricted. Use a CIDR from the same private address range as the current VPC CIDR, or use a publicly-routable CIDR.
+For additional restrictions, see https://docs.aws.amazon.com/vpc/latest/userguide/vpc-cidr-blocks.html
+This is because, as outlined in the VPC CIDR selection restrictions document , you can not combine different CIDRs from different RFC 1918  blocks.
+
+To resolve this and create more private IP address space for our pods we can use  the 100.64.0.0/10 block instead.
+
+➤ Execute the following command:
+
+aws ec2 associate-vpc-cidr-block \
+  --vpc-id ${VPC_ID} \
+  --cidr-block 100.64.0.0/16
+
+This should succeed now and produce the following output:
+
+{
+    "CidrBlockAssociation": {
+        "AssociationId": "vpc-cidr-assoc-0df9d27b82606badc",
+        "CidrBlock": "100.64.0.0/16",
+        "CidrBlockState": {
+            "State": "associating"
+        }
+    },
+    "VpcId": "vpc-0413d277b700882f4"
+}
+➤ After a moment we can verify that the CIDR has been successfully attached to the cluster vpc by executing:
+
+aws ec2 describe-vpcs \
+  --vpc-ids $VPC_ID \
+  --query 'Vpcs[0].CidrBlockAssociationSet[].CidrBlock'
+
+The output should now contain both the original and the new CIDR:
+
+[
+    "192.168.0.0/16",
+    "100.64.0.0/16"
+]
+Create additional subnets in the cluster VPC
+We can now create 3 subnets in 3 different Availability Zones from the new secondary CIDR block, as recommended by the resilience best practices.
+
+➤ Execute the following:
+
+export VPC_ID=$(aws eks describe-cluster --name $DEMO_CLUSTER_NAME --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+
+export SUBNET_ID_A=$(aws ec2 create-subnet \
+  --vpc-id ${VPC_ID} \
+  --cidr-block 100.64.0.0/19 \
+  --availability-zone ${AWS_REGION}a \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=eks-subnet-2a},{Key=advanced-networking,Value=1}]' \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+export SUBNET_ID_B=$(aws ec2 create-subnet \
+  --vpc-id ${VPC_ID} \
+  --cidr-block 100.64.32.0/19 \
+  --availability-zone ${AWS_REGION}b \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=eks-subnet-2b},{Key=advanced-networking,Value=1}]' \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+export SUBNET_ID_C=$(aws ec2 create-subnet \
+  --vpc-id ${VPC_ID} \
+  --cidr-block 100.64.64.0/19 \
+  --availability-zone ${AWS_REGION}c \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=eks-subnet-2c},{Key=advanced-networking,Value=1}]' \
+  --query 'Subnet.SubnetId' \
+  --output text)
+
+➤ Verify that the subnets have been created properly:
+
+aws ec2 describe-subnets \
+  --filters "Name=tag:advanced-networking,Values=1" \
+  --query "Subnets[*].CidrBlock"
+
+This should produce the following output:
+
+[
+    "100.64.64.0/19",
+    "100.64.32.0/19",
+    "100.64.0.0/19"
+]
+For pods to communicate with external resources, we need to associate our new subnets with a route table that defines the required configuration. In this case we can simply use the same route table we've used for the rest of the subnets.
+
+➤ Execute the following (in that same terminal):
+
+export ROUTE_TABLE_ID=$(aws ec2 describe-route-tables \
+  --filters "Name=vpc-id,Values=${VPC_ID}" "Name=route.nat-gateway-id,Values=nat-*" \
+  --query 'RouteTables[0].RouteTableId' \
+  --output text)
+
+aws ec2 associate-route-table \
+  --route-table-id ${ROUTE_TABLE_ID} \
+  --subnet-id ${SUBNET_ID_A}
+
+aws ec2 associate-route-table \
+  --route-table-id ${ROUTE_TABLE_ID} \
+  --subnet-id ${SUBNET_ID_B}
+
+aws ec2 associate-route-table \
+  --route-table-id ${ROUTE_TABLE_ID} \
+  --subnet-id ${SUBNET_ID_C}
+
+Note that assigning a new VPC CIDR automatically updated the main route table to designate the 100.64.0.0/16 as a local target, in the same manner it does for the original 192.168.0.0/16 CIDR.
+
+This expected output is as follows:
+
+{
+    "AssociationId": "rtbassoc-0bf6e8322df34a5a9",
+    "AssociationState": {
+        "State": "associated"
+    }
+}
+{
+    "AssociationId": "rtbassoc-0c742c5288fc4a532",
+    "AssociationState": {
+        "State": "associated"
+    }
+}
+{
+    "AssociationId": "rtbassoc-069e88b0bbe1d0fc0",
+    "AssociationState": {
+        "State": "associated"
+    }
+}
+If we were to deploy an application, for its pods to be scheduled on instances provisioned in the new subnets, it would not actually work.
+
+This is because Auto Mode autoscaling mechanism, via the built-in default NodeClass, doesn't "know" about them.
+
+Create a custom NodeClass and NodePool to utilize the new subnets
+To introduce the subnets and to make sure that network communication and connection to AWS services would work properly, we will target the corresponding tag (advanced-networking: '1'), while re-using the IAM role and the original security group that allows the traffic between pods and the control plane.
+
+➤ Create a new NodeClass that targets the new subnets:
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+cat << EOF > ~/environment/advanced-networking-nodeclass.yaml
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata:
+  name: advanced-networking
+spec:
+  role: '${DEMO_CLUSTER_NODE_ROLE_NAME}'
+  subnetSelectorTerms:
+    - tags:
+        advanced-networking: '1'
+  securityGroupSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/demo-cluster: owned
+EOF
+
+➤ Create a new NodePool that uses the NodeClass above:
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+31
+32
+cat << EOF > ~/environment/advanced-networking-nodepool.yaml
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: advanced-networking
+spec:
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 5m
+  template:
+    metadata:
+      labels:
+        role: advanced-networking
+    spec:
+      nodeClassRef:
+        group: eks.amazonaws.com
+        kind: NodeClass
+        name: advanced-networking
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        - key: eks.amazonaws.com/instance-category
+          operator: In
+          values: [c, m, r]
+        - key: eks.amazonaws.com/instance-cpu
+          operator: In
+          values: ['4', '8', '16', '32']
+EOF
+
+Note that we've added a custom label to the NodePool above to allow targeting these specific worker nodes with a nodeSelector in one of our application components. We only do the explicit targeting to demonstrate that these subnets are fully operational. In a real-world scenario new nodes and pods would consume IPs from the new subnets as required – most notably when there are no more IPs in the original subnets.
+
+➤ Deploy the NodePool and the NodeClass:
+
+kubectl apply -f ~/environment/advanced-networking-nodeclass.yaml
+kubectl apply -f ~/environment/advanced-networking-nodepool.yaml
+
+➤ Verify that the created components are ready to be used (may take a couple of seconds):
+
+kubectl get nodepool,nodeclass
+
+To illustrate pods being provisioned in the new subnets, we'll re-deploy the UI application component.
+
+➤ Execute the following command to create a custom values.yaml file:
+
+1
+2
+3
+4
+5
+6
+7
+cat << EOF > ~/environment/advanced-networking-values-ui.yaml
+replicaCount: 3
+autoscaling:
+  minReplicas: 3
+nodeSelector:
+  role: advanced-networking
+EOF
+
+We only add the node selector and increase the amount of replicas (to illustrate topology spread across the new subnets) to the file above as we will re-use the rest of the values from the previous Helm chart installation.
+
+➤ Re-deploy the UI component:
+
+1
+2
+3
+4
+5
+helm upgrade retail-store-app-ui oci://public.ecr.aws/aws-containers/retail-store-sample-ui-chart \
+  --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} \
+  --values ~/environment/advanced-networking-values-ui.yaml \
+  --reuse-values \
+  --wait
+
+Note that it will take a minute or so for the new instances to become operational.
+
+➤ We can verify that both the UI pods and their nodes received IPs from the new subnets:
+
+kubectl get nodes -o custom-columns=NAME:.metadata.name,IP:.status.addresses[0].address -l role=advanced-networking
+kubectl get pods -l app.kubernetes.io/name=ui -o wide
+
+This should provide an output similar to the following:
+
+NAME                  IP
+i-02b5a3d625f34288b   100.64.26.164
+i-042c5454735eab393   100.64.58.201
+i-0fcfb02997484b44c   100.64.84.98
+NAME                                   READY   STATUS    RESTARTS   AGE   IP              NODE
+retail-store-app-ui-69db5c4cdc-2tr6s   1/1     Running   0          20m   100.64.47.144   i-042c5454735eab393
+retail-store-app-ui-69db5c4cdc-676hh   1/1     Running   0          25m   100.64.3.16     i-02b5a3d625f34288b
+retail-store-app-ui-69db5c4cdc-wr8ll   1/1     Running   0          20m   100.64.79.48    i-0fcfb02997484b44c
+We have now configured our subnets and the corresponding Auto Mode components to address the common IP exhaustion use case.
+
+However, there are additional considerations, such as traffic separation or application of different security controls between nodes and pods, that require us to take the network configuration and create pod network isolation.
+
+Isolate Pod Network
+EKS Auto Mode allows to address these requirements by using subnet selection for pods  NodeClass configuration.
+
+➤ Update the advanced-networking NodeClass by executing:
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+cat << EOF > ~/environment/advanced-networking-nodeclass.yaml
+apiVersion: eks.amazonaws.com/v1
+kind: NodeClass
+metadata:
+  name: advanced-networking
+spec:
+  role: '${DEMO_CLUSTER_NODE_ROLE_NAME}'
+  subnetSelectorTerms:
+    - tags:
+        kubernetes.io/role/internal-elb: '1'
+  securityGroupSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/demo-cluster: owned
+  podSubnetSelectorTerms:
+    - tags:
+        advanced-networking: '1'
+  podSecurityGroupSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/demo-cluster: owned
+EOF
+
+The code above (see the highlighted lines) ensures that nodes and pods are placed into different subnets, while still allowing control plane and node-to-pod communications. We achieved that by configuring:
+
+the node-level subnet selector to target the original subnets
+the pod-level subnet selector (podSubnetSelectorTerms) to target the new subnets we created earlier
+the security group selector for both nodes and pods (identical in this example) to target a shared security group that allows traffic between the control plane, nodes and (now) pods
+Note that for pods we've specifically targeted the private subnets, using kubernetes.io/role/elb: 1 tag as outlined in the documentation .
+
+Note that using podSecurityGroupSelectorTerms is mandatory when using podSubnetSelectorTerms configuration. Alternatively, we could have used a different security group to also address the traffic separation use case in the same configuration.
+
+Also note that EKS Auto Mode doesn't support  Security Groups per Pod (SGPP).
+
+Finally, keep in mind the following considerations for subnet selectors for pods:
+
+Reduced pod density: fewer pods can run on each node, because the IP slots on the node's primary EMI can no longer be used for pods
+Routing configuration: route table and network Access Control List (ACL) of the pod subnets are properly configured to allow the required communications
+➤ Deploy the NodeClass (the advanced-networking NodePool doesn't require any changes):
+
+kubectl apply -f ~/environment/advanced-networking-nodeclass.yaml
+
+➤ Verify that the created components are ready to be used:
+
+kubectl get nodepool,nodeclass
+
+Once applied, we don't actually need to do anything else, as Auto Mode will detect the drift  (difference between the cluster state and the configuration outlined in the NodeClass) and reconcile the cluster to the desired state – node and pod subnet separation as we defined.
+
+➤ Verify that the UI pods and their nodes received IPs from different subnets:
+
+kubectl get nodes -o custom-columns=NAME:.metadata.name,IP:.status.addresses[0].address -l role=advanced-networking
+kubectl get pods -l app.kubernetes.io/name=ui -o wide
+
+Note that it will take a couple of minutes for the new non-drifted images to become operational.
+
+This should provide an output similar to the following, showing nodes and pods IPs indeed belong to different subnets:
+
+NAME                  IP
+i-03fed7a34057e58c2   192.168.164.36
+i-042f5d093908ac461   192.168.105.230
+i-0a126a6040e63ec87   192.168.154.221
+NAME                                   READY   STATUS    RESTARTS   AGE     IP              NODE
+retail-store-app-ui-69db5c4cdc-knhv8   1/1     Running   0          5m22s   100.64.34.96    i-0a126a6040e63ec87
+retail-store-app-ui-69db5c4cdc-nvtnh   1/1     Running   0          7m11s   100.64.4.96     i-042f5d093908ac461
+retail-store-app-ui-69db5c4cdc-vgqm5   1/1     Running   0          6m21s   100.64.81.145   i-03fed7a34057e58c2
+➤ We can verify that the application continues to function properly (showing the network setup is working) by extracting the ALB DNS and Ctrl/Cmd-clicking the printed URL:
+
+export SHARED_ALB_URL=$(kubectl get ingress retail-store-shared-group-ui -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "The shared ALB is available at: http://$SHARED_ALB_URL"
+
+Summary
+In this lab, we've learned how to address common IP exhaustion and network separation use cases by performing the following:
+
+extending the cluster VPC with secondary CIDR blocks to provide additional IP address space
+creating new subnets in the secondary CIDR block
+associating a route table to ensure subnet-to-subnet traffic
+configuring EKS AutoMode NodePool and NodeClass resources to implement advanced networking (with or without podSubnetSelectorTerms and podSecurityGroupSelectorTerms)
+
+
+EBS Storage
+A StorageClass in Amazon EKS Auto Mode defines how Amazon EBS volumes are automatically provisioned when applications request persistent storage. By configuring a StorageClass, you can specify default settings for your EBS volumes including volume type, encryption, IOPS, and other storage parameters. You can also configure a StorageClass to use AWS KMS keys for encryption management.
+
+In this section you will learn to create and configure StorageClass resources that works with Amazon EKS Auto Mode to provision EBS volumes.
+
+
+
+StatefulSets and PersistentVolumes
+Overview | Inspect SQL databases | Demonstrate the ephemeral nature of emptyDir | Summary
+
+Overview
+The catalog microservice utilizes an SQL database running in a separate Pod in the cluster. Before we dive deeper into how these are deployed, let's review a number of relevant Kubernetes concepts:
+
+A Volume  is a data store which is accessible to the containers in a pod. How that data store comes to be, and the medium that backs it, are determined by the particular volume type used.
+An Ephemeral Volume  follows a pod's lifetime, and gets created and deleted along with the pod.
+A PersistentVolume  (PV) is a piece of storage in the cluster that has been provisioned by an administrator or dynamically provisioned using a StorageClass. It is a resource in the cluster just like a node is a cluster resource. PVs are a special kind of Volume with a lifecycle independent of any individual Pod that uses the PV.
+A PersistentVolumeClaim  (PVC) is a request for persistent storage by a user. It is the storage equivalent of a pod, wherein pods consume node resources and PVCs consume PV resources. Just as pods can request specific levels of resources (CPU and Memory), claims can request specific size and access modes (e.g. they can be mounted ReadWriteOnce, ReadOnlyMany, ReadWriteMany, or ReadWriteOncePod).
+A StatefulSet  runs a group of pods, and maintains a sticky identity for each of those pods. Although individual pods in a StatefulSet are susceptible to failure, the persistent Pod identifiers make it easier to match existing volumes to the new pods that replace any that have failed. This is useful for managing applications, such as databases, that need persistent storage.
+A StorageClass  provides a way for administrators to describe a "class" of storage they offer. Different classes might map to quality-of-service levels, or to backup policies, or to arbitrary policies determined by cluster administrators.
+Dynamic Volume Provisioning  allows storage volumes to be created on-demand. Without dynamic provisioning, cluster administrators have to manually make calls to their cloud or storage provider to create new storage volumes, and then create PersistentVolume objects to represent them in Kubernetes. The dynamic provisioning feature eliminates the need for cluster administrators to pre-provision storage. Instead, it automatically provisions storage when it is requested by users.
+Enable MySQL component for the catalog service
+Since we initially deployed the catalog service with an in-memory database, let's first enable a MySQL Pod with no persistent storage for it before demonstrating how to use Amazon EKS Auto Mode for stateful applications. Run the below command:
+
+helm upgrade -i retail-store-app-catalog oci://public.ecr.aws/aws-containers/retail-store-sample-catalog-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} -f - <<EOF
+mysql:
+  create: true
+EOF
+
+Ensure that the MySQL Pod of the catalog service is up and running:
+
+kubectl get pods -l app.kubernetes.io/instance=retail-store-app-catalog -l app.kubernetes.io/component=mysql
+
+Inspect SQL databases
+The catalog microservice utilizes a MySQL database running in a Pod in the cluster.
+
+➤ Let's inspect the MySQL database Pod to see its current volume configuration:
+
+kubectl describe statefulset retail-store-app-catalog-mysql
+
+You should see output similar to the below:
+
+Name:               retail-store-app-catalog-mysql-0
+Namespace:          default
+...
+Replicas:           1 desired | 1 total
+...
+Pod Template:
+...
+  Containers:
+   mysql:
+    Image:      public.ecr.aws/docker/library/mysql:8.0
+    Port:       3306/TCP
+    Host Port:  0/TCP
+    Environment:
+      MYSQL_ROOT_PASSWORD:  my-secret-pw
+      MYSQL_DATABASE:       catalog
+      MYSQL_USER:           <set to the key 'username' in secret 'catalog-db'> Optional: false
+      MYSQL_PASSWORD:       <set to the key 'password' in secret 'catalog-db'>  Optional: false
+    Mounts:
+      /var/lib/mysql from data (rw)
+  Volumes:
+   data:
+    Type:          EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:
+    SizeLimit:     <unset>
+  Node-Selectors:  <none>
+  Tolerations:     <none>
+Volume Claims:     <none>
+...
+We can make the following observations:
+
+The MySQL database is deployed as a StatefulSet with a single replica.
+The Pod template includes a single mysql container, with a data volume of type emptyDir.
+Demonstrate the ephemeral nature of emptyDir
+An emptyDir volume is first created when a Pod is assigned to a node, and exists as long as that Pod is running on that node. As the name implies, the emptyDir volume is initially empty. All containers in the Pod can read and write the same files in the emptyDir volume, though that volume can be mounted on the same or different paths in each container. When a Pod is removed from a node for any reason, the data in the emptyDir is deleted permanently. Therefore emptyDir is not a good fit for our SQL databases.
+
+We can demonstrate the ephemeral nature of emptyDir by starting a shell session inside the MySQL container and creating a test file. After that we'll delete the Pod that is running in our StatefulSet. Because the Pod is using an emptyDir and not a PV, the file will not survive a Pod restart.
+
+➤ First let's run a command inside our MySQL container to create a file in the /tmp directory:
+
+kubectl exec retail-store-app-catalog-mysql-0 -- bash -c "echo 123 > /tmp/test.txt"
+
+➤ Now, let's verify our test.txt file was created in the tmp directory:
+
+kubectl exec retail-store-app-catalog-mysql-0 -- cat /tmp/test.txt
+
+You should see the contents of the file we created:
+
+123
+➤ Now, let's remove the current retail-store-app-catalog-mysql Pod to force the StatefulSet controller to automatically re-create a new retail-store-app-catalog-mysql Pod:
+
+kubectl delete pod retail-store-app-catalog-mysql-0
+
+➤ Wait for the Pod to be re-created:
+
+kubectl wait --for=condition=Ready pod retail-store-app-catalog-mysql-0 --timeout=30s
+
+After a few seconds you should see:
+
+pod/retail-store-app-catalog-mysql-0 condition met
+➤ Verify the Pod is running:
+
+kubectl get pod retail-store-app-catalog-mysql-0
+
+The output should be similar to the following:
+
+NAME                                   READY   STATUS    RESTARTS   AGE
+retail-store-app-catalog-mysql-0   1/1     Running   0          48s
+➤ Check for the presence of test.txt in the /tmp directory:
+
+kubectl exec retail-store-app-catalog-mysql-0 -- cat /tmp/test.txt
+
+With the following output:
+
+cat: /tmp/test.txt: No such file or directory
+command terminated with exit code 1
+You can see that the test.txt file no longer exists due to emptyDir volumes being ephemeral.
+
+Summary
+In this section, we performed the following steps:
+
+Inspected the StatefulSet resources associated with the catalog MySQL database.
+Verified that this database is provisioned using an emptyDir volume.
+Demonstrated the ephemeral nature of emptyDir volumes.
+In the next section, we will define a default StorageClass and use this to create a persistent volume for the catalog MySQL database.
+
+Default Storage Class using EBS CSI driver
+Overview | Update the components | Summary
+
+Overview
+In the previous section we saw that the databases for the catalog and orders services are using ephemeral emptyDir volumes for storage. In the remainder of this module, we will create a StorageClass which we will then use to replace these volumes with persistent volumes using the EBS CSI driver. We will also learn how we can use the StorageClass to configure a volume parameter, such as a KMS key to encrypt the volume.
+
+In this section we will create a default StorageClass and use this to create a persistent volume for the catalog MySQL database. In the next section, we will then create an additional StorageClass for the orders PostgreSQL database which increases the amount of provisioned IOPS.
+
+Update the components
+Create a default StorageClass with KMS encryption
+➤ First, let's create a KMS key as follows:
+
+KEY_ID=$(aws kms create-key --tags TagKey=Name,TagValue=eks-automode-workshop --query 'KeyMetadata.KeyId' --output text)
+KEY_ARN=$(aws kms describe-key --key-id $KEY_ID --query 'KeyMetadata.Arn' --output text)
+echo "Key Id:" $KEY_ID
+echo "Key Arn:" $KEY_ARN
+
+➤ Next, let's create an IAM resource policy JSON document for the KMS key, which allows the CSI service that runs on the EC2 managed instance to assume that role to encrypt & decrypt the data written to the EBS volume:
+
+cat >key-policy.json <<EOF
+{
+    "Version": "2012-10-17",
+    "Id": "key-auto-policy-3",
+    "Statement": [
+        {
+            "Sid": "iam-kms",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::$AWS_ACCOUNT_ID:root"
+            },
+            "Action": "kms:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "ec2-kms",
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "*"
+            },
+            "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:CreateGrant",
+                "kms:DescribeKey"
+            ],
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "kms:CallerAccount": "$AWS_ACCOUNT_ID",
+                    "kms:ViaService": "ec2.$AWS_REGION.amazonaws.com"
+                }
+            }
+        }
+    ]
+}
+EOF
+
+➤ Now let's attach this policy document to the KMS key:
+
+aws kms put-key-policy --key-id $KEY_ID --policy file://key-policy.json
+
+➤ Finally, let's create a new storage class using the KMS key:
+
+cat >~/environment/ebs-kms-sc.yaml <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: eks-auto-ebs-kms-sc
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"
+  kmsKeyId: $KEY_ID
+EOF
+
+kubectl apply -f ~/environment/ebs-kms-sc.yaml
+
+➤ Let's inspect the StorageClass we just created:
+
+kubectl describe storageclass eks-auto-ebs-kms-sc
+
+This should produce the following output:
+
+Name:            eks-auto-ebs-kms-sc
+IsDefaultClass:  Yes
+Annotations:     kubectl.kubernetes.io/last-applied-configuration={"apiVersion":"storage.k8s.io/v1","kind":"StorageClass","metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"},"name":"eks-auto-ebs-kms-sc"},"parameters":{"encrypted":"true","kmsKeyId":"2d61cc69-7f98-474d-a663-b682872a9f6a","type":"gp3"},"provisioner":"ebs.csi.eks.amazonaws.com","volumeBindingMode":"WaitForFirstConsumer"}
+,storageclass.kubernetes.io/is-default-class=true
+Provisioner:           ebs.csi.eks.amazonaws.com
+Parameters:            encrypted=true,kmsKeyId=2d61cc69-7f98-474d-a663-b682872a9f6a,type=gp3
+AllowVolumeExpansion:  <unset>
+MountOptions:          <none>
+ReclaimPolicy:         Delete
+VolumeBindingMode:     WaitForFirstConsumer
+Events:                <none>
+We can make the following observations:
+
+eks-auto-ebs-kms-sc is configured as the default storage class.
+The associated provisioner is ebs.csi.eks.amazonaws.com. This provisioner is automatically made available by EKS Auto Mode.
+The EBS volume type is set to gp3 (defaults to 3000 IOPS).
+The ReclaimPolicy is set to Delete, which means that when the associated PVC is deleted, this results in the deletion of both the PV object in Kubernetes, as well as the associated storage asset in the external infrastructure.
+The VolumeBindingMode  is set to WaitForFirstConsumer. This mode delays the binding and provisioning of a PersistentVolume until a Pod using the PersistentVolumeClaim is created. PersistentVolumes will be selected or provisioned conforming to the topology that is specified by the pod's scheduling constraints. This is needed in situations where storage backends are topology-constrained and not globally accessible from all Nodes in the cluster (as would be the case where multiple AZs are used).
+Encryption is configured for volumes using the KMS key we created.
+Update the catalog MySQL database Pod
+Now that we have a default StorageClass in place, let's update the catalog service to use it. Since many of StatefulSet fields, including volumeClaimTemplates, cannot be modified, we will uninstall the catalog component and then reinstall it, so we can update the volume type from emptyDir to a Persistent Volume.
+
+➤ First, uninstall the current catalog service:
+
+helm uninstall retail-store-app-catalog
+
+Re-launch the catalog service using:
+
+helm upgrade -i retail-store-app-catalog oci://public.ecr.aws/aws-containers/retail-store-sample-catalog-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} -f - <<EOF
+app:
+  persistence:
+    provider: mysql
+    endpoint: ""
+    database: "catalog"
+
+    secret:
+      create: true
+      name: catalog-db
+      username: catalog
+      password: "mysqlcatalog123"
+
+mysql:
+  create: true
+  persistentVolume:
+    enabled: true
+    accessMode:
+      - ReadWriteOnce
+    size: 30Gi
+EOF
+
+Verify that the PVC for the catalog MySQL database has been created
+The re-launched catalog service should now have an associated PersistentVolumeClaim.
+
+➤ We can see this by running:
+
+kubectl describe statefulset retail-store-app-catalog-mysql
+
+This time the output shows:
+
+Name:               retail-store-app-catalog-mysql
+Namespace:          default
+...
+  Containers:
+   mysql:
+    Image:      public.ecr.aws/docker/library/mysql:8.0
+    Port:       3306/TCP
+    Host Port:  0/TCP
+    Environment:
+      MYSQL_ROOT_PASSWORD:  my-secret-pw
+      MYSQL_DATABASE:       catalog
+      MYSQL_USER:           <set to the key 'username' in secret 'catalog-db'>  Optional: false
+      MYSQL_PASSWORD:       <set to the key 'password' in secret 'catalog-db'>  Optional: false
+    Mounts:
+      /var/lib/mysql from data (rw)
+  Volumes:         <none>
+  Node-Selectors:  <none>
+  Tolerations:     <none>
+Volume Claims:
+  Name:          data
+  StorageClass:
+  Labels:        <none>
+  Annotations:   <none>
+  Capacity:      30Gi
+Let's inspect the PVC resource.
+
+➤ To list all PVCs use:
+
+kubectl get pvc
+
+You should see:
+
+NAME                                    STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS          VOLUMEATTRIBUTESCLASS   AGE
+data-retail-store-app-catalog-mysql-0   Bound    pvc-45a9e6ab-ed7c-47e1-9576-c3f01f33d327   30Gi       RWO            eks-auto-ebs-csi-sc   <unset>                 4h43m
+data-retail-store-app-catalog-mysql-0 is the PVC created for the MySQL DB.
+
+➤ Let's inspect it using:
+
+kubectl describe pvc data-retail-store-app-catalog-mysql-0
+
+This should produce the following output:
+
+Name:          data-retail-store-app-catalog-mysql-0
+Namespace:     default
+StorageClass:  eks-auto-ebs-kms-sc
+Status:        Bound
+Volume:        pvc-c5c4dec1-0ce5-4a00-982d-233c7d5bfdbb
+Labels:        ...
+Annotations:   pv.kubernetes.io/bind-completed: yes
+               pv.kubernetes.io/bound-by-controller: yes
+               volume.beta.kubernetes.io/storage-provisioner: ebs.csi.eks.amazonaws.com
+               volume.kubernetes.io/selected-node: i-04a55c853d8acf24f
+               volume.kubernetes.io/storage-provisioner: ebs.csi.eks.amazonaws.com
+Finalizers:    [kubernetes.io/pvc-protection]
+Capacity:      30Gi
+Access Modes:  RWO
+VolumeMode:    Filesystem
+Used By:       retail-store-app-catalog-mysql-0
+Events:        <none>
+From the output we can see that the PVC is bound to a specific PV (in this case pvc-c5c4dec1-0ce5-4a00-982d-233c7d5bfdbb), and that this has been provisioned using ebs.csi.eks.amazonaws.com with a capacity of 30Gi as specified in values-catalog.yaml.
+
+➤ We can also inspect the PV as follows:
+
+kubectl describe pv $(kubectl get pvc data-retail-store-app-catalog-mysql-0 -o jsonpath="{.spec.volumeName}")
+
+The output should be similar to the below:
+
+Name:              pvc-c5c4dec1-0ce5-4a00-982d-233c7d5bfdbb
+Labels:            <none>
+Annotations:       pv.kubernetes.io/provisioned-by: ebs.csi.eks.amazonaws.com
+                   volume.kubernetes.io/provisioner-deletion-secret-name:
+                   volume.kubernetes.io/provisioner-deletion-secret-namespace:
+Finalizers:        [external-provisioner.volume.kubernetes.io/finalizer kubernetes.io/pv-protection external-attacher/ebs-csi-eks-amazonaws-com]
+StorageClass:      eks-auto-ebs-kms-sc
+Status:            Bound
+Claim:             default/data-retail-store-app-catalog-mysql-0
+Reclaim Policy:    Delete
+Access Modes:      RWO
+VolumeMode:        Filesystem
+Capacity:          30Gi
+Node Affinity:
+  Required Terms:
+    Term 0:        topology.kubernetes.io/zone in [us-west-2a]
+Message:
+Source:
+    Type:              CSI (a Container Storage Interface (CSI) volume source)
+    Driver:            ebs.csi.eks.amazonaws.com
+    FSType:            ext4
+    VolumeHandle:      vol-05938b7ff13ef8ebf
+    ReadOnly:          false
+    VolumeAttributes:      storage.kubernetes.io/csiProvisionerIdentity=1735365022188-8218-ebs.csi.eks.amazonaws.com
+Events:                <none>
+The VolumeHandle references the Amazon EBS Volume ID associated with the PV. Let's use this to inspect the EBS volume and check that it has been created correctly.
+
+Verify that the EBS volume for the catalog MySQL database has been created correctly
+➤ Obtain the underlying Amazon EBS Volume ID as follows:
+
+MYSQL_PV_NAME=$(kubectl get pvc data-retail-store-app-catalog-mysql-0 -o jsonpath="{.spec.volumeName}")
+MYSQL_EBS_VOL_ID=$(kubectl get pv $MYSQL_PV_NAME -o jsonpath="{.spec.csi.volumeHandle}")
+echo EBS Volume ID: $MYSQL_EBS_VOL_ID
+
+➤ Display the details for the EBS volume:
+
+aws ec2 describe-volumes --volume-ids $MYSQL_EBS_VOL_ID --query Volumes[0]
+
+Note the following section of the output, proving that KMS encryption is enabled with the correct key:
+
+    ...
+    "Encrypted": true,
+    "KmsKeyId": "arn:aws:kms:us-west-2:845041152230:key/2d61cc69-7f98-474d-a663-b682872a9f6a",
+    ...
+    "Iops": 3000,
+    ...
+Note also that the Iops attribute is set to the gp3 default of 3000.
+
+Summary
+In this section, we performed the following steps:
+
+Created a KMS key.
+Attached a key policy that enables EC2 instances in the account to use the KMS key for encrypting EBS volumes.
+Created a default StorageClass configured to use this key for encryption, and using a standard gp3 volume.
+Updated the configuration of the catalog service to use the default StorageClass for creating a persistent volume.
+Verified that the EBS volume was created correctly, using the correct KMS key and also the default IOPS setting for gp3 volumes.
+In the next section we will add a second StorageClass which provisions higher IOPS for gp3 volumes, and explicitly configures the orders PostgreSQL database to use this.
+
+
+
+Multiple EBS Storage Classes
+Overview | Update StatefulSet configuration | Summary
+
+Overview
+In the previous section we created a default StorageClass and then configured the catalog service to use this to create a PV for its MySQL database.
+
+The default StorageClass we created uses a KMS key to encrypt volumes, and also uses the default gp3 setting for IOPS (which we verified to be 3000).
+
+Now suppose we were expecting a higher volume of traffic on the orders database, and needed to increase the IOPS accordingly.
+
+In this section, we will create a second StorageClass that provisions an encrypted gp3 volume with 6000 IOPS, and then explicitly configure the orders PostgreSQL StatefulSet to use a PV based on this StorageClass.
+
+Update StatefulSet configuration
+Create a second StorageClass with 6000 IOPS
+➤ Create a StorageClass using the same KMS key from the previous section, but also specifying an IOPS value:
+
+cat >~/environment/ebs-iops-kms-sc.yaml <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: eks-auto-ebs-iops-kms-sc
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  iops: "6000"
+  encrypted: "true"
+  kmsKeyId: $KEY_ID
+EOF
+
+kubectl apply -f ~/environment/ebs-iops-kms-sc.yaml
+
+Note that this time we did not include an annotation to make this the default StorageClass. This means we will need to reference this StorageClass explicitly in order to use it.
+
+Update the orders PostgreSQL database pod
+Since we can't update some of the StatefulSet fields such as the persistentVolumeClaimRetentionPolicy, we will first have to uninstall the current version of the orders service, and reinstall it again.
+
+➤ Execute the following command:
+
+helm uninstall retail-store-app-orders
+
+➤ Create a values-orders.yaml as follows:
+
+helm upgrade -i retail-store-app-orders oci://public.ecr.aws/aws-containers/retail-store-sample-orders-chart \
+  --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} -f - <<EOF
+app:
+  persistence:
+    provider: postgres
+    endpoint: ""
+    database: "orders"
+
+    secret:
+      create: true
+      name: orders-db
+      username: orders
+      password: "postgres123"
+
+postgresql:
+  create: true
+  persistentVolume:
+    enabled: true
+    accessMode:
+      - ReadWriteOnce
+    size: 20Gi
+    storageClass: eks-auto-ebs-iops-kms-sc
+EOF
+
+➤ Wait until the orders service is up and running again (it may restart and take a minute):
+
+kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=retail-store-app-orders --namespace default --timeout=300s
+
+Verify that the PVC for the orders PostgreSQL database has been created
+➤ List all PVCs:
+
+kubectl get pvc
+
+You should see:
+
+NAME                                        STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS               VOLUMEATTRIBUTESCLASS   AGE
+data-retail-store-app-catalog-mysql-0       Bound    pvc-c5c4dec1-0ce5-4a00-982d-233c7d5bfdbb   30Gi       RWO            eks-auto-ebs-kms-sc        <unset>                 93m
+data-retail-store-app-orders-postgresql-0   Bound    pvc-b1e886af-a019-4d98-adb0-d321e5dcab80   20Gi       RWO            eks-auto-ebs-iops-kms-sc   <unset>                 6m55s
+data-retail-store-app-orders-postgresql-0 is the PVC created for the PostgreSQL DB.
+
+➤ Inspect it using:
+
+kubectl describe pvc data-retail-store-app-orders-postgresql-0
+
+➤ You can also inspect the PV as follows:
+
+kubectl describe pv $(kubectl get pvc data-retail-store-app-orders-postgresql-0 -o jsonpath="{.spec.volumeName}")
+
+Verify that the EBS volume for the orders PostgreSQL database has been created correctly
+Let us verify that the IOPS attribute has been set correctly.
+
+➤ Obtain the underlying AWS EBS Volume ID as follows:
+
+PGSQL_PV_NAME=$(kubectl get pvc data-retail-store-app-orders-postgresql-0 -o jsonpath="{.spec.volumeName}")
+PGSQL_EBS_VOL_ID=$(kubectl get pv $PGSQL_PV_NAME -o jsonpath="{.spec.csi.volumeHandle}")
+echo EBS Volume ID: $PGSQL_EBS_VOL_ID
+
+➤ Display the details for the EBS volume:
+
+aws ec2 describe-volumes --volume-ids $PGSQL_EBS_VOL_ID --query Volumes[0]
+
+Note the following sections of the output, proving that IOPS is set to 6000 and KMS encryption is enabled with the correct key:
+
+    ...
+    "Encrypted": true,
+    "KmsKeyId": "arn:aws:kms:us-west-2:845041152230:key/2d61cc69-7f98-474d-a663-b682872a9f6a",
+    "Size": 20,
+    ...
+    "Iops": 6000,
+    ...
+Summary
+In this section, we performed the following steps:
+
+Created a StorageClass configured to use a KMS key for encryption, and using a standard gp3 volume with 6000 provisioned IOPS.
+Updated the configuration of the orders service to use this new StorageClass for creating a persistent volume.
+Verified that the EBS volume was created correctly, using the correct KMS key and also the specified provisioned IOPS setting.
