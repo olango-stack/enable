@@ -4,3 +4,60 @@ Let's execute the following command to import the cluster IAM role to the Terraf
 terraform import aws_iam_role.cluster_role $DEMO_CLUSTER_ROLE_NAME
 
 Since the cluster has already been created for us, we'll have to modify the cluster IAM role trust policy per the EKS Auto Mode documentation . That means that before planning and applying the resources, we should import the AWS IAM role to the Terraform state.
+
+
+NAME                                         CREATED AT
+cninodes.eks.amazonaws.com                   2024-12-04T13:03:50Z
+cninodes.vpcresources.k8s.aws                2024-12-04T13:00:46Z
+ingressclassparams.eks.amazonaws.com         2024-12-04T13:03:49Z
+nodeclaims.karpenter.sh                      2024-12-04T13:03:39Z
+nodeclasses.eks.amazonaws.com                2024-12-04T13:03:39Z
+nodediagnostics.eks.amazonaws.com            2024-12-04T13:03:39Z
+nodepools.karpenter.sh                       2024-12-04T13:03:39Z
+policyendpoints.networking.k8s.aws           2024-12-04T13:00:46Z
+securitygrouppolicies.vpcresources.k8s.aws   2024-12-04T13:00:46Z
+targetgroupbindings.eks.amazonaws.com        2024-12-04T13:03:49Z
+
+
+These CRDs enable several crucial capabilities of EKS Auto Mode:
+
+nodepools support provisioning compute
+ingressclassparams and targetgroupbinding allow exposing applications, and
+nodediagnostics provide diagnostics capabilities
+
+To explore these capabilities, we will initially deploy the application in a manner that is self-contained in the Amazon EKS cluster, without using any AWS services that provision load balancers or managed databases. 
+
+
+
+
+
+
+
+
+
+cat << EOF > ~/environment/values-ui.yaml
+
+app:
+  theme: default
+  endpoints:
+    catalog: http://retail-store-app-catalog:80
+    carts: http://retail-store-app-carts:80
+    checkout: http://retail-store-app-checkout:80
+    orders: http://retail-store-app-orders:80
+EOF
+
+helm upgrade -i retail-store-app-catalog oci://public.ecr.aws/aws-containers/retail-store-sample-catalog-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} --hide-notes
+helm upgrade -i retail-store-app-orders oci://public.ecr.aws/aws-containers/retail-store-sample-orders-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} --hide-notes
+helm upgrade -i retail-store-app-carts oci://public.ecr.aws/aws-containers/retail-store-sample-cart-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} --hide-notes
+helm upgrade -i retail-store-app-checkout oci://public.ecr.aws/aws-containers/retail-store-sample-checkout-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} --hide-notes
+helm upgrade -i retail-store-app-ui oci://public.ecr.aws/aws-containers/retail-store-sample-ui-chart --version ${RETAIL_STORE_APP_HELM_CHART_VERSION} -f ~/environment/values-ui.yaml --hide-notes
+
+
+The commands above should produce helm outputs for each component of the app (catalog, orders, cart, checkout, and ui) similar to the following output:
+
+Amazon EKS Auto Mode will evaluate the resource requirements of these Pods and determine the optimum compute to launch for our applications to run, considering any scheduling constraints configured.
+
+These Services are internal to the cluster, so we cannot access them from the Internet or even the VPC. However, we can use port-forwarding  to access an existing Pod in the EKS cluster to check that the application UI is working.
+
+kubectl port-forward $(kubectl get pods \
+ --selector=app.kubernetes.io/name=ui -o jsonpath='{.items[0].metadata.name}') 8080:8080
